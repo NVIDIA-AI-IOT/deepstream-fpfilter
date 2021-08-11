@@ -51,7 +51,6 @@
 #define MUXER_BATCH_TIMEOUT_USEC 40000
 
 #define PRIMARY_DETECTOR_UID 1
-#define SECONDARY_DETECTOR_UID 2
 
 #define TRACKER_CONFIG_FILE   "config/ds_tracker_config.txt"
 #define FPFILTER_CONFIG_FILE  "config/ds_fpfilter_config.txt"
@@ -91,9 +90,193 @@ static gchar source_info[1024] = {0,};
 static gboolean is_fpfilter_enabled = FALSE;
 LinkUnlinkInfo fp_filter_dynamic_link_info = {0,};
 static gboolean save_fpfilter_images = FALSE;
+static guint fpfilter_image_cnt = 0;
 static GMutex fpfilter_images_save_mutex;
 
 static GAsyncQueue *frame_save_queue = NULL;
+
+GstElement *fpfilter_bin = NULL;
+
+/* Taken from ds test2 app */
+/* Tracker config parsing */
+static gchar *
+get_absolute_file_path (gchar *cfg_file_path, gchar *file_path)
+{
+  gchar abs_cfg_path[PATH_MAX + 1];
+  gchar *abs_file_path;
+  gchar *delim;
+
+  if (file_path && file_path[0] == '/') {
+    return file_path;
+  }
+
+  if (!realpath (cfg_file_path, abs_cfg_path)) {
+    g_free (file_path);
+    return NULL;
+  }
+
+  // Return absolute path of config file if file_path is NULL.
+  if (!file_path) {
+    abs_file_path = g_strdup (abs_cfg_path);
+    return abs_file_path;
+  }
+
+  delim = g_strrstr (abs_cfg_path, "/");
+  *(delim + 1) = '\0';
+
+  abs_file_path = g_strconcat (abs_cfg_path, file_path, NULL);
+  g_free (file_path);
+
+  return abs_file_path;
+}
+
+static gboolean
+set_tracker_properties (GstElement *nvtracker)
+{
+  gboolean ret = FALSE;
+  GError *error = NULL;
+  gchar **keys = NULL;
+  gchar **key = NULL;
+  GKeyFile *key_file = g_key_file_new ();
+
+  if (!g_key_file_load_from_file (key_file, TRACKER_CONFIG_FILE, G_KEY_FILE_NONE,
+          &error)) {
+    g_printerr ("Failed to load config file: %s\n", error->message);
+    goto done;
+  }
+
+  keys = g_key_file_get_keys (key_file, CONFIG_GROUP_TRACKER, NULL, &error);
+  CHECK_ERROR (error);
+
+  for (key = keys; *key; key++) {
+    if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_WIDTH)) {
+      gint width =
+          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
+          CONFIG_GROUP_TRACKER_WIDTH, &error);
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "tracker-width", width, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_HEIGHT)) {
+      gint height =
+          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
+          CONFIG_GROUP_TRACKER_HEIGHT, &error);
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "tracker-height", height, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GPU_ID)) {
+      guint gpu_id =
+          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
+          CONFIG_GPU_ID, &error);
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "gpu_id", gpu_id, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_LL_CONFIG_FILE)) {
+      char* ll_config_file = get_absolute_file_path (TRACKER_CONFIG_FILE,
+                g_key_file_get_string (key_file,
+                    CONFIG_GROUP_TRACKER,
+                    CONFIG_GROUP_TRACKER_LL_CONFIG_FILE, &error));
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "ll-config-file", ll_config_file, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_LL_LIB_FILE)) {
+      char* ll_lib_file = get_absolute_file_path (TRACKER_CONFIG_FILE,
+                g_key_file_get_string (key_file,
+                    CONFIG_GROUP_TRACKER,
+                    CONFIG_GROUP_TRACKER_LL_LIB_FILE, &error));
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "ll-lib-file", ll_lib_file, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_ENABLE_BATCH_PROCESS)) {
+      gboolean enable_batch_process =
+          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
+          CONFIG_GROUP_TRACKER_ENABLE_BATCH_PROCESS, &error);
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "enable_batch_process",
+                    enable_batch_process, NULL);
+    } else {
+      g_printerr ("Unknown key '%s' for group [%s]", *key,
+          CONFIG_GROUP_TRACKER);
+    }
+  }
+
+  ret = TRUE;
+done:
+
+  if (key_file) {
+    g_key_file_free (key_file);
+  }
+
+  if (error) {
+    g_error_free (error);
+  }
+  if (keys) {
+    g_strfreev (keys);
+  }
+  if (!ret) {
+    g_printerr ("%s failed", __func__);
+  }
+  return ret;
+}
+
+static GstElement *create_filter_elements_bin(gchar *bin_name)
+{
+  GstElement *bin = NULL, *nvtracker = NULL, *secondary_detector = NULL, *fpfilter = NULL;
+  /* Create a source GstBin to abstract this bin's content from the rest of the pipeline */
+  bin = gst_bin_new (bin_name);
+
+  /* We need to have a tracker to track the identified objects */
+  nvtracker = gst_element_factory_make ("nvtracker", "tracker");
+  secondary_detector = gst_element_factory_make ("nvinfer", "primary-nvinference-engine2");
+  fpfilter = gst_element_factory_make ("nvfpfilter", "fp-filter");
+
+  if (!nvtracker || !secondary_detector || !fpfilter)
+  {
+    g_printerr ("One element could not be created. Exiting.\n");
+    return NULL;
+  }
+
+  /* Set necessary properties of the tracker element. */
+  if (!set_tracker_properties(nvtracker)) {
+    g_printerr ("Failed to set tracker properties. Exiting.\n");
+    return NULL;
+  }
+
+  g_object_set (G_OBJECT (secondary_detector), "config-file-path", INFER_PEOPLESEMSEGNET_CONFIG_FILE, NULL);
+  g_object_set (G_OBJECT (fpfilter), "config-file-path", FPFILTER_CONFIG_FILE, NULL);
+  g_object_set (G_OBJECT (fpfilter), "enable-fp-filter", TRUE, NULL);
+
+  gst_bin_add_many (GST_BIN (bin), nvtracker, secondary_detector, fpfilter, NULL);
+  gst_element_link_many (nvtracker, secondary_detector, fpfilter, NULL);
+
+  GstPad *filter_src_pad = gst_element_get_static_pad (fpfilter, "src");
+  if (!filter_src_pad)
+  {
+    g_print ("Unable to get src pad\n");
+    return NULL;
+  }
+
+  if (!gst_element_add_pad (bin, gst_ghost_pad_new ("src", filter_src_pad))) {
+    g_printerr ("Failed to add ghost pad in fpfilter bin\n");
+    bin = NULL;
+    gst_object_unref(filter_src_pad);
+    return bin;
+  }
+
+  gst_object_unref(filter_src_pad);
+
+  GstPad *nvtracker_sink_pad = gst_element_get_static_pad (nvtracker, "sink");
+  if (!nvtracker_sink_pad)
+  {
+    g_print ("Unable to get nvtracker sink pad\n");
+    return NULL;
+  }
+
+  if (!gst_element_add_pad (bin, gst_ghost_pad_new ("sink", nvtracker_sink_pad))) {
+    g_printerr ("Failed to add ghost sink pad in fpfilter bin\n");
+    bin = NULL;
+    gst_object_unref(nvtracker_sink_pad);
+    return bin;
+  }
+  gst_object_unref(nvtracker_sink_pad);
+
+  return bin;
+}
+
 
 static gboolean
 get_fpfilter_images_save_status(void)
@@ -147,9 +330,18 @@ enable_fpfilter(void)
     return;
   }
 
-  is_fpfilter_enabled = TRUE;
+  fpfilter_bin = create_filter_elements_bin("fp-filter-bin");
+  if (!fpfilter_bin)
+  {
+    g_printerr("fp filter bin creation failed\n");
+    return;
+  }
+
+  fp_filter_dynamic_link_info.main_element = fpfilter_bin;
   disable_fpfilter_images_save();
   add_element_to_pipeline (&fp_filter_dynamic_link_info);
+  is_fpfilter_enabled = TRUE;
+  g_print("fpfilter enabled\n");
 }
 
 static void
@@ -164,6 +356,9 @@ disable_fpfilter(void)
   is_fpfilter_enabled = FALSE;
   disable_fpfilter_images_save();
   remove_element_from_pipeline (&fp_filter_dynamic_link_info);
+  fpfilter_bin = NULL;
+  fp_filter_dynamic_link_info.main_element = NULL;
+  g_print("fpfilter disabled\n");
 }
 
 /* Store output in kitti format */
@@ -189,7 +384,7 @@ write_kitti_output (gchar *output_path, guint config_index, NvDsBatchMeta *batch
         l_obj = l_obj->next) {
       NvDsObjectMeta *obj = (NvDsObjectMeta *) l_obj->data;
 
-      if (obj->unique_component_id != PRIMARY_DETECTOR_UID) 
+      if (obj->unique_component_id != PRIMARY_DETECTOR_UID)
         continue;
 
       float left = obj->rect_params.left;
@@ -210,7 +405,7 @@ static void
 save_frames_for_processing (NvDsBatchMeta *batch_meta)
 {
   NvDsMetaList *l_frame = NULL;
-  for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) 
+  for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next)
   {
     NvDsFrameMeta *frame_meta = (NvDsFrameMeta *) (l_frame->data);
     NvDsUserMetaList *frame_user_meta_list = NULL;
@@ -224,13 +419,16 @@ save_frames_for_processing (NvDsBatchMeta *batch_meta)
 
     if (!user_meta)
     {
-      g_print("fp filter meta data not found\n");
       return;
     }
     NvFpFilterMeta *fpfilter_meta = (NvFpFilterMeta *) user_meta->user_meta_data;
     g_print("frame_num: %d tp count: %d fp count: %d\n", frame_meta->frame_num, fpfilter_meta->tp_count, fpfilter_meta->fp_count);
+
+    if (!get_fpfilter_images_save_status())
+      continue;
+
     guint total_objects = fpfilter_meta->tp_count + fpfilter_meta->fp_count;
-    if (total_objects == 0)
+    if (total_objects <= 1)
       continue;
 
     gdouble fp_percent = ((gdouble)fpfilter_meta->fp_count)/((gdouble) total_objects);
@@ -241,6 +439,7 @@ save_frames_for_processing (NvDsBatchMeta *batch_meta)
       frame_info->pad_index = frame_meta->pad_index;
       frame_info->source = source_info;
       g_async_queue_push (frame_save_queue, frame_info);
+      fpfilter_image_cnt++;
     }
   }
 }
@@ -252,8 +451,7 @@ after_filter_buffer_probe (GstPad * pad, GstPadProbeInfo * info,
   GstBuffer *buf = (GstBuffer *) info->data;
   NvDsBatchMeta *batch_meta = gst_buffer_get_nvds_batch_meta (buf);
   write_kitti_output (output_path, 0, batch_meta);
-  if (get_fpfilter_images_save_status())
-    save_frames_for_processing(batch_meta);
+  save_frames_for_processing(batch_meta);
   frame_number++;
   g_print("frame number: %d\n", frame_number);
 
@@ -646,7 +844,7 @@ create_sink_bin (gchar *bin_name, gchar *out_name)
 
   g_object_set (G_OBJECT (sink_encoder), "profile", 0, NULL);
   g_object_set (G_OBJECT (sink_encoder), "iframeinterval", 30, NULL);
-  g_object_set (G_OBJECT (sink_encoder), "bitrate", 2000000, NULL);
+  g_object_set (G_OBJECT (sink_encoder), "bitrate", 6000000, NULL);
 
   sink_codecparse = gst_element_factory_make("h264parse", "h264-parser-sink");
   if (!sink_codecparse) {
@@ -787,188 +985,6 @@ handle_usr_prompt(guchar *msg, guint len)
   g_object_unref(parser);
 }
 
-
-/* Taken from ds test2 app */
-/* Tracker config parsing */
-
-static gchar *
-get_absolute_file_path (gchar *cfg_file_path, gchar *file_path)
-{
-  gchar abs_cfg_path[PATH_MAX + 1];
-  gchar *abs_file_path;
-  gchar *delim;
-
-  if (file_path && file_path[0] == '/') {
-    return file_path;
-  }
-
-  if (!realpath (cfg_file_path, abs_cfg_path)) {
-    g_free (file_path);
-    return NULL;
-  }
-
-  // Return absolute path of config file if file_path is NULL.
-  if (!file_path) {
-    abs_file_path = g_strdup (abs_cfg_path);
-    return abs_file_path;
-  }
-
-  delim = g_strrstr (abs_cfg_path, "/");
-  *(delim + 1) = '\0';
-
-  abs_file_path = g_strconcat (abs_cfg_path, file_path, NULL);
-  g_free (file_path);
-
-  return abs_file_path;
-}
-
-static gboolean
-set_tracker_properties (GstElement *nvtracker)
-{
-  gboolean ret = FALSE;
-  GError *error = NULL;
-  gchar **keys = NULL;
-  gchar **key = NULL;
-  GKeyFile *key_file = g_key_file_new ();
-
-  if (!g_key_file_load_from_file (key_file, TRACKER_CONFIG_FILE, G_KEY_FILE_NONE,
-          &error)) {
-    g_printerr ("Failed to load config file: %s\n", error->message);
-    goto done;
-  }
-
-  keys = g_key_file_get_keys (key_file, CONFIG_GROUP_TRACKER, NULL, &error);
-  CHECK_ERROR (error);
-
-  for (key = keys; *key; key++) {
-    if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_WIDTH)) {
-      gint width =
-          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
-          CONFIG_GROUP_TRACKER_WIDTH, &error);
-      CHECK_ERROR (error);
-      g_object_set (G_OBJECT (nvtracker), "tracker-width", width, NULL);
-    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_HEIGHT)) {
-      gint height =
-          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
-          CONFIG_GROUP_TRACKER_HEIGHT, &error);
-      CHECK_ERROR (error);
-      g_object_set (G_OBJECT (nvtracker), "tracker-height", height, NULL);
-    } else if (!g_strcmp0 (*key, CONFIG_GPU_ID)) {
-      guint gpu_id =
-          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
-          CONFIG_GPU_ID, &error);
-      CHECK_ERROR (error);
-      g_object_set (G_OBJECT (nvtracker), "gpu_id", gpu_id, NULL);
-    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_LL_CONFIG_FILE)) {
-      char* ll_config_file = get_absolute_file_path (TRACKER_CONFIG_FILE,
-                g_key_file_get_string (key_file,
-                    CONFIG_GROUP_TRACKER,
-                    CONFIG_GROUP_TRACKER_LL_CONFIG_FILE, &error));
-      CHECK_ERROR (error);
-      g_object_set (G_OBJECT (nvtracker), "ll-config-file", ll_config_file, NULL);
-    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_LL_LIB_FILE)) {
-      char* ll_lib_file = get_absolute_file_path (TRACKER_CONFIG_FILE,
-                g_key_file_get_string (key_file,
-                    CONFIG_GROUP_TRACKER,
-                    CONFIG_GROUP_TRACKER_LL_LIB_FILE, &error));
-      CHECK_ERROR (error);
-      g_object_set (G_OBJECT (nvtracker), "ll-lib-file", ll_lib_file, NULL);
-    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_ENABLE_BATCH_PROCESS)) {
-      gboolean enable_batch_process =
-          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
-          CONFIG_GROUP_TRACKER_ENABLE_BATCH_PROCESS, &error);
-      CHECK_ERROR (error);
-      g_object_set (G_OBJECT (nvtracker), "enable_batch_process",
-                    enable_batch_process, NULL);
-    } else {
-      g_printerr ("Unknown key '%s' for group [%s]", *key,
-          CONFIG_GROUP_TRACKER);
-    }
-  }
-
-  ret = TRUE;
-done:
-
-  if (key_file) {
-    g_key_file_free (key_file);
-  }
-
-  if (error) {
-    g_error_free (error);
-  }
-  if (keys) {
-    g_strfreev (keys);
-  }
-  if (!ret) {
-    g_printerr ("%s failed", __func__);
-  }
-  return ret;
-}
-
-
-static GstElement *create_filter_elements_bin(gchar *bin_name)
-{
-  GstElement *bin = NULL, *nvtracker = NULL, *secondary_detector = NULL, *fpfilter = NULL;
-  /* Create a source GstBin to abstract this bin's content from the rest of the pipeline */
-  bin = gst_bin_new (bin_name);
-
-  /* We need to have a tracker to track the identified objects */
-  nvtracker = gst_element_factory_make ("nvtracker", "tracker");
-  secondary_detector = gst_element_factory_make ("nvinfer", "primary-nvinference-engine2");
-  fpfilter = gst_element_factory_make ("nvfpfilter", "fp-filter");
-
-  if (!nvtracker || !secondary_detector || !fpfilter)
-  {
-    g_printerr ("One element could not be created. Exiting.\n");
-    return NULL;
-  }
-
-  /* Set necessary properties of the tracker element. */
-  if (!set_tracker_properties(nvtracker)) {
-    g_printerr ("Failed to set tracker properties. Exiting.\n");
-    return NULL;
-  }
-
-  g_object_set (G_OBJECT (secondary_detector), "config-file-path", INFER_PEOPLESEMSEGNET_CONFIG_FILE, NULL);
-  g_object_set (G_OBJECT (fpfilter), "config-file-path", FPFILTER_CONFIG_FILE, NULL);
-
-  gst_bin_add_many (GST_BIN (bin), nvtracker, secondary_detector, fpfilter, NULL);
-  gst_element_link_many (nvtracker, secondary_detector, fpfilter, NULL);
-
-  GstPad *filter_src_pad = gst_element_get_static_pad (fpfilter, "src");
-  if (!filter_src_pad)
-  {
-    g_print ("Unable to get src pad\n");
-    return NULL;
-  }
-
-  if (!gst_element_add_pad (bin, gst_ghost_pad_new ("src", filter_src_pad))) {
-    g_printerr ("Failed to add ghost pad in fpfilter bin\n");
-    bin = NULL;
-    gst_object_unref(filter_src_pad);
-    return bin;
-  }
-
-  gst_object_unref(filter_src_pad);
-
-  GstPad *nvtracker_sink_pad = gst_element_get_static_pad (nvtracker, "sink");
-  if (!nvtracker_sink_pad)
-  {
-    g_print ("Unable to get nvtracker sink pad\n");
-    return NULL;
-  }
-
-  if (!gst_element_add_pad (bin, gst_ghost_pad_new ("sink", nvtracker_sink_pad))) {
-    g_printerr ("Failed to add ghost sink pad in fpfilter bin\n");
-    bin = NULL;
-    gst_object_unref(nvtracker_sink_pad);
-    return bin;
-  }
-  gst_object_unref(nvtracker_sink_pad);
-
-  return bin;
-}
-
 gboolean get_fpfilter_status_from_cfg_file(const gchar *cfg_file_path)
 {
   GKeyFile *key_file = g_key_file_new ();
@@ -1012,7 +1028,7 @@ main (int argc, char *argv[])
 {
   GMainLoop *loop = NULL;
   GstElement *pipeline = NULL, *source = NULL, *streammux = NULL, *primary_detector = NULL,
-    *nvvidconv = NULL, *nvvidconv1 = NULL, *nvosd = NULL, *sink = NULL, *fpfilter_bin = NULL;
+    *nvvidconv = NULL, *nvvidconv1 = NULL, *nvosd = NULL, *sink = NULL;
 
   GstBus *bus = NULL;
   guint bus_watch_id;
@@ -1083,11 +1099,14 @@ main (int argc, char *argv[])
   sink = create_sink_bin ("sink_bin", argv[3]);
 
   is_fpfilter_enabled = get_fpfilter_status_from_cfg_file(FPFILTER_CONFIG_FILE);
-  fpfilter_bin = create_filter_elements_bin("fp-filter-bin");
-  if (!fpfilter_bin)
+  if (is_fpfilter_enabled)
   {
-    g_printerr("fp filter bin creation failed\n");
-    return -1;
+    fpfilter_bin = create_filter_elements_bin("fp-filter-bin");
+    if (!fpfilter_bin)
+    {
+      g_printerr("fp filter bin creation failed\n");
+      return -1;
+    }
   }
 
   fp_filter_dynamic_link_info.main_element = fpfilter_bin;
@@ -1150,7 +1169,7 @@ main (int argc, char *argv[])
     g_print ("Unable to get nvvidconv sink pad\n");
     return -1;
   }
-  
+
   gst_pad_add_probe (nvvidconv_sink_pad, GST_PAD_PROBE_TYPE_BUFFER, after_filter_buffer_probe, NULL, NULL);
   gst_object_unref (nvvidconv_sink_pad);
 
@@ -1175,5 +1194,7 @@ main (int argc, char *argv[])
   gst_object_unref (GST_OBJECT (pipeline));
   g_source_remove (bus_watch_id);
   g_main_loop_unref (loop);
+
+  g_print("saved images cnt: %d\n", fpfilter_image_cnt);
   return 0;
 }
