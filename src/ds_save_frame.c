@@ -32,7 +32,6 @@
 
 static gboolean g_stop_save_frame_thread = FALSE;
 static GMutex g_stop_save_frame_thread_mutex;
-static GThread *g_save_frame_thread = NULL;
 static GAsyncQueue *g_frames_queue = NULL;
 
 /* task to save frames */
@@ -54,11 +53,10 @@ _save_frame_task(gpointer arg)
             free(frame_info);
         }
 
-        g_mutex_lock (&g_stop_save_frame_thread_mutex);
         usleep(1000); /* Sleep for 1ms until next frames are availble */
+        g_mutex_lock (&g_stop_save_frame_thread_mutex);
     }
     g_mutex_unlock(&g_stop_save_frame_thread_mutex);
-
     g_mutex_clear(&g_stop_save_frame_thread_mutex);
     return NULL;
 }
@@ -71,7 +69,8 @@ start_save_frame_task(GAsyncQueue *queue)
     /* mutex to stop the task. */
     g_mutex_init (&g_stop_save_frame_thread_mutex);
     /* Start the thread. */
-    g_save_frame_thread = g_thread_new ("DS save frames thread", _save_frame_task, NULL);
+    GThread *g_save_frame_thread = g_thread_new ("DS save frames thread", _save_frame_task, NULL);
+    g_thread_unref (g_save_frame_thread);
 }
 
 void
@@ -86,7 +85,5 @@ stop_save_frame_task(void)
     g_mutex_lock(&g_stop_save_frame_thread_mutex);
     g_stop_save_frame_thread = TRUE;
     g_mutex_unlock(&g_stop_save_frame_thread_mutex);
-
-    g_thread_unref (g_save_frame_thread);
 }
 

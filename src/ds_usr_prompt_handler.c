@@ -28,6 +28,8 @@
 
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <netinet/ip.h>
@@ -45,7 +47,6 @@ struct usr_prompt_info
 static gint g_server_port = -1;
 static gboolean g_stop_server = FALSE;
 static GMutex g_stop_server_mutex;
-static GThread *g_monitor_thread;
 
 static void _read_bytes(gint fd, guint read_len, guchar *buffer)
 {
@@ -84,6 +85,9 @@ static gpointer _server_task(gpointer arg)
         exit(0);
     }
 
+    int flags = fcntl(sockfd, F_GETFL);
+    fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+
     memset(&servaddr, 0, sizeof(servaddr));
 
     servaddr.sin_family = AF_INET; 
@@ -113,9 +117,19 @@ static gpointer _server_task(gpointer arg)
 
         // Accept the data packet from client
         connfd = accept(sockfd, (struct sockaddr *) &cli, &len);
-        if (connfd < 0) { 
-            g_print("server accept failed...\n"); 
-            exit(0); 
+        if (connfd == -1)
+        {
+            if ((errno == EWOULDBLOCK) || (errno == EAGAIN))
+            {
+                g_usleep (1000); /* no waiting connections. Wait for 1ms before checking again */
+                g_mutex_lock (&g_stop_server_mutex);
+                continue;
+            }
+            else if (connfd < 0)
+            {
+                g_print("server accept failed...\n"); 
+                exit(0); 
+            }
         }
 
         g_print("accepting connection success\n");
@@ -129,7 +143,6 @@ static gpointer _server_task(gpointer arg)
 
         close(connfd);
         g_mutex_lock (&g_stop_server_mutex);
-        g_usleep (1000); /* waiting for 1ms before checking for user prompt again */
     }
     g_mutex_unlock(&g_stop_server_mutex);
 
@@ -155,7 +168,8 @@ void start_usr_prompt_monitor(user_prompt_callback cb)
     info->msg_cb = cb;
 
     /* Start the monitor task. */
-    g_monitor_thread = g_thread_new ("DS app user prompt monitor thread", _server_task, (gpointer) info);
+    GThread *g_monitor_thread = g_thread_new ("DS app user prompt monitor thread", _server_task, (gpointer) info);
+    g_thread_unref (g_monitor_thread);
 }
 
 void stop_usr_prompt_monitor(void)
@@ -163,6 +177,5 @@ void stop_usr_prompt_monitor(void)
     g_mutex_lock(&g_stop_server_mutex);
     g_stop_server = TRUE;
     g_mutex_unlock(&g_stop_server_mutex);
-
-    g_thread_unref (g_monitor_thread);
 }
+
