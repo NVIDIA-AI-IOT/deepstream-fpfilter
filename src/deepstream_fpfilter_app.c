@@ -945,7 +945,7 @@ handle_usr_prompt(guchar *msg, guint len)
     }
 
     const gchar *target = json_object_get_string_member (arr_obj, USR_PROMPT_KEY_TARGET);
-    if (!g_strcmp0(target, "fpfilter")) 
+    if (!g_strcmp0(target, "fpfilter"))
     {
       if (!json_object_has_member (arr_obj, USR_PROMPT_KEY_ACTION))
       {
@@ -1028,7 +1028,7 @@ main (int argc, char *argv[])
 {
   GMainLoop *loop = NULL;
   GstElement *pipeline = NULL, *source = NULL, *streammux = NULL, *primary_detector = NULL,
-    *nvvidconv = NULL, *nvvidconv1 = NULL, *nvosd = NULL, *sink = NULL;
+    *nvvidconv1 = NULL, *nvvidconv2 = NULL, *nvosd = NULL, *sink = NULL, *nvvidconv3 = NULL;
 
   GstBus *bus = NULL;
   guint bus_watch_id;
@@ -1065,18 +1065,19 @@ main (int argc, char *argv[])
     return -1;
   }
 
-  /* Create two nvinfer instances for the two back-to-back detectors */
   primary_detector = gst_element_factory_make ("nvinfer", "primary-nvinference-engine1");
 
   /* Use convertor to convert from NV12 to RGBA as required by nvosd */
-  nvvidconv = gst_element_factory_make ("nvvideoconvert", "nvvideo-converter");
-
   nvvidconv1 = gst_element_factory_make ("nvvideoconvert", "nvvideo-converter1");
+
+  nvvidconv2 = gst_element_factory_make ("nvvideoconvert", "nvvideo-converter2");
+
+  nvvidconv3 = gst_element_factory_make ("nvvideoconvert", "nvvideo-converter3");
 
   /* Create OSD to draw on the converted RGBA buffer */
   nvosd = gst_element_factory_make ("nvdsosd", "nv-onscreendisplay");
 
-  if (!source || !primary_detector || !nvvidconv || !nvvidconv1 || !nvosd) {
+  if (!source || !primary_detector || !nvvidconv1 || !nvvidconv2 || !nvvidconv3 || !nvosd) {
     g_printerr ("One element could not be created. Exiting.\n");
     return -1;
   }
@@ -1110,15 +1111,15 @@ main (int argc, char *argv[])
   }
 
   fp_filter_dynamic_link_info.main_element = fpfilter_bin;
-  fp_filter_dynamic_link_info.main_prev_element = primary_detector;
-  fp_filter_dynamic_link_info.main_prev_prev_element = streammux;
-  fp_filter_dynamic_link_info.main_next_element = nvvidconv;
+  fp_filter_dynamic_link_info.main_prev_element = nvvidconv1;
+  fp_filter_dynamic_link_info.main_prev_prev_element = primary_detector;
+  fp_filter_dynamic_link_info.main_next_element = nvvidconv2;
   fp_filter_dynamic_link_info.pipeline = pipeline;
   fp_filter_dynamic_link_info.loop = loop;
 
   g_mutex_init (&fpfilter_images_save_mutex);
 
-  gst_bin_add_many (GST_BIN (pipeline), source, streammux, primary_detector, nvosd, nvvidconv, nvvidconv1, sink, NULL);
+  gst_bin_add_many (GST_BIN (pipeline), source, streammux, primary_detector, nvosd, nvvidconv1, nvvidconv2, nvvidconv3, sink, NULL);
   if (is_fpfilter_enabled)
     gst_bin_add(GST_BIN (pipeline), fpfilter_bin);
 
@@ -1149,21 +1150,21 @@ main (int argc, char *argv[])
 
   if (!is_fpfilter_enabled)
   {
-    if (!gst_element_link_many (streammux, primary_detector, nvvidconv, nvosd, nvvidconv1, sink, NULL)) {
+    if (!gst_element_link_many (streammux, primary_detector, nvvidconv1, nvvidconv2, nvosd, nvvidconv3, sink, NULL)) {
       g_printerr ("Elements could not be linked: 2. Exiting.\n");
       return -1;
     }
   }
   else
   {
-    if (!gst_element_link_many (streammux, primary_detector, fpfilter_bin, nvvidconv, nvosd, nvvidconv1, sink, NULL)) {
+    if (!gst_element_link_many (streammux, primary_detector, nvvidconv1, fpfilter_bin, nvvidconv2, nvosd, nvvidconv3, sink, NULL)) {
       g_printerr ("Elements could not be linked: 2. Exiting.\n");
       return -1;
     }
   }
 
   /* Adding probe before and after filter element to save kitti data */
-  GstPad *nvvidconv_sink_pad = gst_element_get_static_pad (nvvidconv, "sink");
+  GstPad *nvvidconv_sink_pad = gst_element_get_static_pad (nvvidconv2, "sink");
   if (!nvvidconv_sink_pad)
   {
     g_print ("Unable to get nvvidconv sink pad\n");
@@ -1198,3 +1199,4 @@ main (int argc, char *argv[])
   g_print("saved images cnt: %d\n", fpfilter_image_cnt);
   return 0;
 }
+
