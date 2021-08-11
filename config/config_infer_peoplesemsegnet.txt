@@ -29,15 +29,13 @@ net-scale-factor=0.007843
 model-color-format=0
 offsets=127.5;127.5;127.5
 labelfile-path=../models/ngc/unet/labels.txt
-
 ##Replace following path to your model file
-
 model-engine-file=../models/ngc/unet/peoplesemsegnet.etlt_b1_gpu0_int8.engine
-
+int8-calib-file=../models/ngc/unet/peoplesemsegnet_int8.txt
 #current DS cannot parse onnx etlt model, so you need to
 #convert the etlt model to TensoRT engine first use tlt-convert
-#tlt-encoded-model=../models/unet/unet_resnet18.etlt
-#tlt-model-key=tlt_encode
+tlt-encoded-model=../models/unet/peoplesemsegnet.etlt
+tlt-model-key=tlt_encode
 
 infer-dims=3;544;960
 batch-size=1
