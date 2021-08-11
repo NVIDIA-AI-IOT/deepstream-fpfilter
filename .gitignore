@@ -1,0 +1,5 @@
+src/*.o
+models/
+kitti/
+deepstream-fpfilter-app
+ds-fpfilter-manager

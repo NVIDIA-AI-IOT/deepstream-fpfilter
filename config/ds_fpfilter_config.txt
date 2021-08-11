@@ -1,0 +1,83 @@
+################################################################################
+# Copyright (c) 2020-2021, NVIDIA CORPORATION. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of this software and associated documentation files (the "Software"),
+# to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+################################################################################
+
+# Mandatory properties
+# [property]: property group is mandatory
+#
+# unique-id
+#
+# pgie-unique-id
+#
+# classes-to-filter
+#
+# seg-model-labels #Mandatory only when a segmentation assessor model is present.
+#
+# Optional:
+# enable-fp-filter (Default = 1)
+#
+# enable-seg-mask-filtering (Default = 1)
+#
+# enable-tracker-filtering (Default = 0)
+# num-frames-tracked (Default = 5)
+# frame-cnt-threshold (Default = 1)
+# 
+# seg-assessor-unique-id-list (Default=Empty)
+# bbox-assessor-unique-id-list (Default=Empty)
+# Note: If both the above properties are empty, plugin is essentially passthrough.
+#
+# bbox-iou-threshold (Default = 0.5)
+#
+# seg-miou-threshold (Default = 0)
+#
+# support-threshold (Default = 1)
+#
+
+
+[property]
+#0: fp filter is disabled (passthrough mode) 1: enabled
+enable-fp-filter=1
+# Unique id for the fpfilter
+unique-id=3
+# unique id of the main nvinfer element. Should be a bbox model.
+pgie-unique-id=1
+# unique id's list of the bbox assessor models.
+#bbox-assessor-unique-id-list=4
+# threshold for iou between bbox from main model and assessor model.
+bbox-iou-threshold=0.5
+# 1: Enables segmentation mask based filtering. Each segmentation cannot be enabled or disabled separately. 0: Disables segmentation mask based filtering.
+enable-seg-mask-filtering=1
+# threshold for mask iou betwen bbox from main model and segmentation mask from assessor model.
+seg-miou-threshold=0.2
+# Labels of segmentation models. bbox model's labels are not required as they are attached as part of the metadata by nvinfer element.
+seg-model-labels-list=background;person
+# threshold for total number of models required to support a bbox as true positve to be considered as true positve.
+# If a bbox has support from models less than this threshold, then it will be considered as false positive.
+# support-threshold is list of class specific thresholds. The length should be equal to length of classes-to-filter list.
+support-threshold=1
+# List of classes from the main model to be filtered.
+classes-to-filter=person
+# 1: Enables tracker based filtering. 0: Disabled
+enable-tracker-filtering=0
+# Number of previous frames to consider for tracker based filtering.
+num-frames-tracked=5
+# Minimum number of times an object needs to be present in previous *num-frames-tracked* frames for it to be not filterd out.
+frame-cnt-threshold=5

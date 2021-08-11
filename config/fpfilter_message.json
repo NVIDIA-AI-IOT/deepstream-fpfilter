@@ -1,0 +1,13 @@
+{
+    "message" : [
+        {
+            "target"            :   "fpfilter",
+            "action"            :   "enable"
+        },
+        {
+            "target"            :   "fpfilter",
+            "action"            :   "save-fp-enable",
+            "duration"          :   100
+        }
+    ]
+}
