@@ -50,14 +50,13 @@
  * based on the fastest source's framerate. */
 #define MUXER_BATCH_TIMEOUT_USEC 40000
 
-#define PRIMARY_DETECTOR_UID 1
-
 #define TRACKER_CONFIG_FILE   "config/ds_tracker_config.txt"
 #define FPFILTER_CONFIG_FILE  "config/ds_fpfilter_config.txt"
 #define INFER_PEOPLENET_CONFIG_FILE "config/config_infer_peoplenet.txt"
 #define INFER_PEOPLESEMSEGNET_CONFIG_FILE "config/config_infer_peoplesemsegnet.txt"
 #define CONFIG_GROUP_PROPERTY                 "property"
 #define CONFIG_PROPERTY_ENABLE_FP_FILTER      "enable-fp-filter"
+#define CONFIG_PROPERTY_PGIE_UNIQUE_ID  "pgie-unique-id"
 
 #define FALSE_POSITIVE_PERCENTAGE_THRESHOLD    0.5
 #define CHECK_ERROR(error) \
@@ -92,6 +91,7 @@ LinkUnlinkInfo fp_filter_dynamic_link_info = {0,};
 static gboolean save_fpfilter_images = FALSE;
 static guint fpfilter_image_cnt = 0;
 static GMutex fpfilter_images_save_mutex;
+static gint pgie_unique_id = -1;
 
 static GAsyncQueue *frame_save_queue = NULL;
 
@@ -384,7 +384,7 @@ write_kitti_output (gchar *output_path, guint config_index, NvDsBatchMeta *batch
         l_obj = l_obj->next) {
       NvDsObjectMeta *obj = (NvDsObjectMeta *) l_obj->data;
 
-      if (obj->unique_component_id != PRIMARY_DETECTOR_UID)
+      if (obj->unique_component_id != pgie_unique_id)
         continue;
 
       float left = obj->rect_params.left;
@@ -1022,6 +1022,42 @@ done:
   return is_enabled;
 }
 
+gint get_pgie_id_from_cfg_file(const gchar *cfg_file_path)
+{
+  GKeyFile *key_file = g_key_file_new ();
+  GError *error = NULL;
+  gint pgie_id = -1;
+
+  if (!g_key_file_load_from_file (key_file, cfg_file_path, G_KEY_FILE_NONE, &error))
+  {
+    g_printerr ("Failed to load config file: %s\n", error->message);
+    goto done;
+  }
+
+  if (!g_key_file_has_group (key_file, CONFIG_GROUP_PROPERTY))
+  {
+    g_printerr ("Could not find group %s\n", CONFIG_GROUP_PROPERTY);
+    goto done;
+  }
+
+  if (g_key_file_has_key (key_file, CONFIG_GROUP_PROPERTY, CONFIG_PROPERTY_PGIE_UNIQUE_ID, NULL))
+  {
+    pgie_id = g_key_file_get_integer (key_file, CONFIG_GROUP_PROPERTY, CONFIG_PROPERTY_PGIE_UNIQUE_ID, &error);
+    CHECK_ERROR (error);
+  }
+
+done:
+  if (key_file) {
+    g_key_file_free (key_file);
+  }
+
+  if (error) {
+    g_error_free (error);
+  }
+
+  return pgie_id;
+}
+
 
 int
 main (int argc, char *argv[])
@@ -1035,7 +1071,7 @@ main (int argc, char *argv[])
 
   /* Check input arguments */
   if (argc < 4) {
-    g_printerr ("Usage: %s <location_of_multifilesrc_input> <location_to_save_kitti_labels> <location_to_save_output_video>\n", argv[0]);
+    g_printerr ("Usage: %s <location_of_input> <location_to_save_kitti_labels> <location_to_save_output_video>\n", argv[0]);
     return -1;
   }
 
@@ -1043,6 +1079,9 @@ main (int argc, char *argv[])
   cudaGetDevice(&current_device);
   struct cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, current_device);
+
+  pgie_unique_id = get_pgie_id_from_cfg_file(FPFILTER_CONFIG_FILE);
+  g_print("pgie unique id: %d\n", pgie_unique_id);
 
   /* Standard GStreamer initialization */
   gst_init (&argc, &argv);
