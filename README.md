@@ -1,7 +1,7 @@
 # Introduction
 
-`fpfilter` plugin filters false positive bounding boxes from primary detector's predictions using output 
-from (assessor) models trained for similar tasks.
+This application introduces `fpfilter` deepstream plugin which filters out false positive bounding boxes from primary detector's predictions using output 
+from (assessor) models trained for similar tasks. We also show how the plugin can be used to identify frames for active learning to have the highest impact during retraining.
 
 ## Segmentation Model Assessor
 
@@ -28,19 +28,18 @@ If the assessor models are not accurate enough, some true positives will be elim
 
 # About this application
 
-This application shows how to use `fpfilter` plugin for filtering false positive images and filtered images for  active learning. Please check ds_fpfilter_config.txt for more information about configurable parameters.
+This application shows how to use `fpfilter` plugin for filtering false positive images and filter images for active learning. Please check ds_fpfilter_config.txt for more information about configurable parameters of `fpfilter`.
 
 ## Active Learning
 `fpfilter` plugin attaches number of false positives and true positives it detected in a frame to user metadata of each frame. Application filters frames with high false positives and uploads the frames to cloud for labelling and retraining the model. Images are uploaded to S3 bucket using boto3. Currently, uploading is only supported for `multifilesrc` source element. This is just a reference implementation showing how `fpfilter` plugin can be used for active learning.
 
-Application also supports linking and unlinking of `fpfilter` plugin, assessor models into the pipeline during runtime. Saving frames with high false positives can also be enabled dynamically during run time. User can send commands to the pipeline using `ds-fpfilter-manager` application through which user can enable false positive filtering and saving frames to cloud anytime he/she wants. `ds-fpfilter-manager` communicates with Deepstream application using simple client-server mechanism where messages are sent to DS app in json format.
+Application also supports dynamic linking and unlinking of `fpfilter` plugin, assessor models into the pipeline during runtime. Saving frames with high false positives can also be enabled dynamically during run time without stopping the pipeline. User can send commands to the pipeline using `ds-fpfilter-manager` application through which user can enable false positive filtering and saving frames to cloud anytime he/she wants. `ds-fpfilter-manager` communicates with Deepstream application using simple client-server mechanism where messages are sent to DS app in json format.
 
 ## Build and Execution:
 
-Download the application into deepstream preferably into sample_apps folder (/opt/nvidia/deepstream/deepstream-5.1/sources/apps/sample_apps) and copy the plugin library(libnvdsgst_fpfilter.so) to 
-/opt/nvidia/deepstream/deepstream-5.1/lib/gst-plugins/ folder.
+Download the application into deepstream preferably into sample_apps folder (/opt/nvidia/deepstream/deepstream-5.1/sources/apps/sample_apps) and copy the plugin library(libnvdsgst_fpfilter.so) which is in `bin` folder to /opt/nvidia/deepstream/deepstream-5.1/lib/gst-plugins/ folder.
 
-Download models from ngc and change the paths in config files accordingly.
+Download models from ngc and change the paths in config files in `config` folder accordingly.
 The application supports mp4, h264 and multiple jpeg files as input source. Also, application supports file as well as video render output. By default mp4 source and file sink are enabled. Input and output formats can be changed from `Makefile` by choosing different build flags. Application also saves kitti labels of the bounding boxes frame by frame.
 
 Commands:
